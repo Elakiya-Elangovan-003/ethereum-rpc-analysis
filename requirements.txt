@@ -1,0 +1,24 @@
+﻿# Ethereum RPC Analysis Project Dependencies
+# Core libraries for blockchain interaction and data analysis
+
+# Ethereum interaction
+web3==6.15.1
+
+# Data handling and analysis
+pandas==2.2.0
+numpy==1.26.3
+
+# Visualization
+matplotlib==3.8.2
+seaborn==0.13.1
+
+# Database
+# sqlite3 is built into Python, no need to install
+
+# Utility
+python-dotenv==1.0.0
+requests==2.31.0
+
+# Jupyter for analysis notebooks
+jupyter==1.0.0
+ipykernel==6.29.0
