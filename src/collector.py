@@ -117,6 +117,104 @@ class RPCCollector:
         self.conn.commit()
         return results
     
+    def collect_logs(self, from_block: int, to_block: int) -> Dict:
+        """Collect logs from all providers for comparison"""
+        results = {}
+        timestamp = datetime.now()
+        
+        # Filter for Transfer events (most common, ERC20 standard)
+        # This is the keccak256 hash of "Transfer(address,address,uint256)"
+        filter_params = {
+            'fromBlock': from_block,
+            'toBlock': to_block,
+            'topics': ['0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef']
+        }
+        
+        for provider_id, provider in self.providers.items():
+            try:
+                start_time = time.time()
+                logs = provider['web3'].eth.get_logs(filter_params)
+                latency_ms = (time.time() - start_time) * 1000
+                
+                # Store in database
+                self.cursor.execute('''
+                    INSERT INTO log_measurements 
+                    (timestamp, provider, from_block, to_block, log_count, latency_ms, filter_params)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    timestamp, provider_id, from_block, to_block,
+                    len(logs), latency_ms, str(filter_params)
+                ))
+                
+                results[provider_id] = {
+                    'log_count': len(logs),
+                    'latency_ms': round(latency_ms, 2)
+                }
+                
+            except Exception as e:
+                results[provider_id] = {'error': str(e)}
+                print(f"      ❌ {self.providers[provider_id]['name']}: {str(e)}")
+
+        self.conn.commit()
+        return results
+    
+    def collect_receipts(self, block_number: int) -> Dict:
+        """Collect transaction receipts from all providers for comparison"""
+        results = {}
+        timestamp = datetime.now()
+        
+        # First, get transactions from the block
+        try:
+            # Use first provider to get block transactions
+            first_provider = list(self.providers.values())[0]
+            block = first_provider['web3'].eth.get_block(block_number, full_transactions=True)
+            
+            if len(block['transactions']) == 0:
+                return {'info': 'No transactions in block'}
+            
+            # Sample up to 3 transactions (to avoid too many requests)
+            sample_txs = block['transactions'][:min(3, len(block['transactions']))]
+            
+            for tx in sample_txs:
+                tx_hash = tx['hash'].hex()
+                
+                for provider_id, provider in self.providers.items():
+                    try:
+                        start_time = time.time()
+                        receipt = provider['web3'].eth.get_transaction_receipt(tx_hash)
+                        latency_ms = (time.time() - start_time) * 1000
+                        
+                        # Store in database
+                        self.cursor.execute('''
+                            INSERT INTO receipt_measurements 
+                            (timestamp, provider, tx_hash, block_number, status, gas_used, latency_ms)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ''', (
+                            timestamp, provider_id, tx_hash, receipt['blockNumber'],
+                            receipt['status'], receipt['gasUsed'], latency_ms
+                        ))
+                        
+                        if provider_id not in results:
+                            results[provider_id] = []
+                        
+                        results[provider_id].append({
+                            'tx': tx_hash[:10] + '...',
+                            'status': receipt['status'],
+                            'gas_used': receipt['gasUsed'],
+                            'latency_ms': round(latency_ms, 2)
+                        })
+                        
+                    except Exception as e:
+                        if provider_id not in results:
+                            results[provider_id] = []
+                        results[provider_id].append({'error': str(e)})
+            
+        except Exception as e:
+            results = {'error': f'Failed to get block transactions: {e}'}
+        
+        self.conn.commit()
+        return results
+    
     def run_collection(self):
         """Main collection loop"""
         print("\n" + "="*60)
@@ -158,10 +256,38 @@ class RPCCollector:
                 # Collect headers for recent blocks
                 if block_numbers:
                     latest_block = max(block_numbers)
+                    
                     # Sample a few recent blocks
                     for offset in [0, 2, 5]:
                         block_to_check = latest_block - offset
                         header_results = self.collect_block_headers(block_to_check)
+                
+                # NEW: Collect logs every 5 iterations (to avoid too many requests)
+                if iteration % 5 == 0 and block_numbers:
+                    latest_block = max(block_numbers)
+                    from_block = latest_block - 10
+                    to_block = latest_block
+                    
+                    print(f"   📋 Collecting logs from blocks {from_block} to {to_block}...")
+                    log_results = self.collect_logs(from_block, to_block)
+                    
+                    for provider_id, result in log_results.items():
+                        if 'error' not in result:
+                            print(f"      {self.providers[provider_id]['name']:15} Logs: {result['log_count']}  Latency: {result['latency_ms']}ms")
+                        else:
+                            print(f"      {self.providers[provider_id]['name']:15} ❌ Error: {result['error']}")
+                
+                # NEW: Collect receipts every 10 iterations
+                if iteration % 10 == 0 and block_numbers:
+                    latest_block = max(block_numbers)
+                    
+                    print(f"   🧾 Collecting receipts from block {latest_block}...")
+                    receipt_results = self.collect_receipts(latest_block)
+                    
+                    if 'error' not in receipt_results and 'info' not in receipt_results:
+                        for provider_id, receipts in receipt_results.items():
+                            if receipts:
+                                print(f"      {self.providers[provider_id]['name']:15} Receipts: {len(receipts)}")
                 
                 # Wait for next iteration
                 remaining = (end_time - datetime.now()).total_seconds()

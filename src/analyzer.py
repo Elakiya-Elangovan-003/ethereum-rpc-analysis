@@ -1,6 +1,6 @@
 ﻿"""
 Analysis script for Ethereum RPC measurements
-Analyzes block lag, divergence, and latency patterns
+Analyzes block lag, divergence, latency patterns, logs, and receipts
 """
 
 import sqlite3
@@ -36,6 +36,36 @@ class RPCAnalyzer:
         df = pd.read_sql_query(query, self.conn)
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         return df
+    
+    def get_log_measurements(self) -> pd.DataFrame:
+        """Load all log measurements"""
+        query = '''
+            SELECT timestamp, provider, from_block, to_block, 
+                   log_count, latency_ms, filter_params
+            FROM log_measurements
+            ORDER BY timestamp
+        '''
+        try:
+            df = pd.read_sql_query(query, self.conn)
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            return df
+        except:
+            return pd.DataFrame()
+    
+    def get_receipt_measurements(self) -> pd.DataFrame:
+        """Load all receipt measurements"""
+        query = '''
+            SELECT timestamp, provider, tx_hash, block_number,
+                   status, gas_used, latency_ms
+            FROM receipt_measurements
+            ORDER BY timestamp
+        '''
+        try:
+            df = pd.read_sql_query(query, self.conn)
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            return df
+        except:
+            return pd.DataFrame()
     
     def analyze_head_lag(self) -> dict:
         """Calculate head block lag between providers"""
@@ -129,6 +159,107 @@ class RPCAnalyzer:
         
         return {'divergences': len(divergences), 'total_blocks': len(df['block_number'].unique())}
     
+    def analyze_logs(self) -> dict:
+        """Analyze log retrieval consistency"""
+        df = self.get_log_measurements()
+        
+        print("\n" + "="*60)
+        print("📋 LOG RETRIEVAL ANALYSIS")
+        print("="*60)
+        
+        if df.empty:
+            print("\n⚠️  No log data collected yet")
+            return {}
+        
+        # Group by timestamp to compare providers
+        log_divergences = []
+        
+        for ts in df['timestamp'].unique():
+            snapshot = df[df['timestamp'] == ts]
+            log_counts = snapshot.set_index('provider')['log_count']
+            
+            if len(log_counts.unique()) > 1:
+                log_divergences.append({
+                    'timestamp': ts,
+                    'counts': log_counts.to_dict()
+                })
+        
+        # Calculate statistics
+        stats = df.groupby('provider')['log_count'].agg(['mean', 'min', 'max', 'std']).round(2)
+        latency_stats = df.groupby('provider')['latency_ms'].agg(['mean', 'min', 'max']).round(2)
+        
+        print(f"\n📊 Total log queries: {len(df)}")
+        print(f"\nLog Count Statistics:")
+        print(stats.to_string())
+        print(f"\nLog Query Latency (ms):")
+        print(latency_stats.to_string())
+        
+        if log_divergences:
+            print(f"\n⚠️  Found {len(log_divergences)} instances where providers returned different log counts:")
+            for div in log_divergences[:3]:
+                print(f"   {div['timestamp']}:")
+                for provider, count in div['counts'].items():
+                    print(f"      {provider}: {count} logs")
+        else:
+            print(f"\n✅ All providers returned consistent log counts!")
+        
+        return {
+            'total_queries': len(df),
+            'divergences': len(log_divergences),
+            'stats': stats.to_dict()
+        }
+    
+    def analyze_receipts(self) -> dict:
+        """Analyze transaction receipt consistency"""
+        df = self.get_receipt_measurements()
+        
+        print("\n" + "="*60)
+        print("🧾 RECEIPT RETRIEVAL ANALYSIS")
+        print("="*60)
+        
+        if df.empty:
+            print("\n⚠️  No receipt data collected yet")
+            return {}
+        
+        # Group by tx_hash to compare providers
+        receipt_divergences = []
+        
+        for tx_hash in df['tx_hash'].unique():
+            tx_data = df[df['tx_hash'] == tx_hash]
+            gas_used = tx_data.groupby('provider')['gas_used'].first()
+            status = tx_data.groupby('provider')['status'].first()
+            
+            # Check if gas_used or status differs
+            if len(gas_used.unique()) > 1 or len(status.unique()) > 1:
+                receipt_divergences.append({
+                    'tx_hash': tx_hash,
+                    'gas_used': gas_used.to_dict(),
+                    'status': status.to_dict()
+                })
+        
+        # Calculate statistics
+        latency_stats = df.groupby('provider')['latency_ms'].agg(['mean', 'min', 'max', 'count']).round(2)
+        
+        print(f"\n📊 Total receipt queries: {len(df)}")
+        print(f"   Unique transactions: {df['tx_hash'].nunique()}")
+        print(f"\nReceipt Query Latency (ms):")
+        print(latency_stats.to_string())
+        
+        if receipt_divergences:
+            print(f"\n⚠️  Found {len(receipt_divergences)} transactions with inconsistent receipts:")
+            for div in receipt_divergences[:3]:
+                print(f"   TX: {div['tx_hash'][:16]}...")
+                print(f"      Gas used: {div['gas_used']}")
+                print(f"      Status: {div['status']}")
+        else:
+            print(f"\n✅ All providers returned consistent receipt data!")
+        
+        return {
+            'total_queries': len(df),
+            'unique_txs': df['tx_hash'].nunique(),
+            'divergences': len(receipt_divergences)
+        }
+    
     def generate_summary(self):
         """Generate overall analysis summary"""
         print("\n" + "="*60)
@@ -149,7 +280,16 @@ class RPCAnalyzer:
         cursor.execute('SELECT MIN(block_number), MAX(block_number) FROM block_measurements')
         min_block, max_block = cursor.fetchone()
         
-        print(f"\n📊 Total measurements: {total_measurements}")
+        # Log and receipt counts
+        cursor.execute('SELECT COUNT(*) FROM log_measurements')
+        log_count = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(*) FROM receipt_measurements')
+        receipt_count = cursor.fetchone()[0]
+        
+        print(f"\n📊 Total block measurements: {total_measurements}")
+        print(f"📋 Total log queries: {log_count}")
+        print(f"🧾 Total receipt queries: {receipt_count}")
         print(f"🔌 Providers monitored: {num_providers}")
         print(f"⏱️  Time range: {start} to {end}")
         print(f"📦 Block range: {min_block:,} to {max_block:,} ({max_block - min_block} blocks)")
@@ -163,6 +303,8 @@ class RPCAnalyzer:
         self.analyze_latency()
         self.analyze_head_lag()
         self.analyze_block_headers()
+        self.analyze_logs()
+        self.analyze_receipts()
         
         print("\n" + "="*60)
         print("✅ Analysis Complete!")

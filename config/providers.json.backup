@@ -1,0 +1,27 @@
+{
+    "providers":  {
+                      "infura":  {
+                                     "name":  "Infura",
+                                     "url":  "https://mainnet.infura.io/v3/2a6c8161347d472eb693a6746364f158",
+                                     "type":  "paid_tier"
+                                 },
+                      "alchemy":  {
+                                      "name":  "Alchemy",
+                                      "url":  "https://eth-mainnet.g.alchemy.com/v2/demo",
+                                      "type":  "free_demo"
+                                  },
+                      "ankr":  {
+                                   "name":  "Ankr",
+                                   "url":  "https://rpc.ankr.com/eth",
+                                   "type":  "public"
+                               },
+                      "llamanodes":  {
+                                         "name":  "LlamaNodes",
+                                         "url":  "https://eth.llamarpc.com",
+                                         "type":  "public"
+                                     }
+                  },
+    "polling_interval_seconds":  12,
+    "collection_duration_hours":  0.08,
+    "block_range_to_check":  10
+}
